@@ -1,0 +1,1 @@
+Downloads all the images from Earth View with Google (https://earthview.withgoogle.com/)
