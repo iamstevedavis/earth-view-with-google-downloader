@@ -6,6 +6,21 @@ const axios = require('axios');
 const prompts = require('prompts');
 // eslint-disable-next-line prefer-destructuring
 const Spinner = require('cli-spinner').Spinner;
+const im = require('imagemagick');
+
+async function isImageGood(localPath) {
+  return new Promise((resolve, reject) => {
+    im.identify(localPath, (err, features) => {
+      if (err) {
+        return reject(err);
+      }
+      if (features.width < 1800 && features.height < 1200) {
+        return resolve(false);
+      }
+      return resolve(true);
+    });
+  });
+}
 
 async function saveImageToDisk(url, localPath) {
   const file = fs.createWriteStream(localPath);
@@ -15,7 +30,11 @@ async function saveImageToDisk(url, localPath) {
       response.on('end', () => resolve())
         .on('error', (e) => reject(e));
     });
-  });
+  })
+    .then(() => isImageGood(localPath))
+    .then((isGoodImage) => {
+      if (!isGoodImage) fs.unlinkSync(localPath);
+    });
 }
 
 async function getImageDataFromGoogle(urlSlug) {
@@ -53,7 +72,7 @@ async function getImageDataFromGoogle(urlSlug) {
   let i = 0;
   const start = performance.now();
   // eslint-disable-next-line no-constant-condition
-  while (i < 10) {
+  while (true) {
     i += 1;
     try {
       /* eslint-disable no-await-in-loop */
@@ -74,6 +93,7 @@ async function getImageDataFromGoogle(urlSlug) {
   return Promise.all(saveImagesPromises)
     .then(() => {
       console.clear();
-      console.log(`Saved ${i} images in ${Math.floor(performance.now() - start)} milliseconds.`);
+      console.log(`Got ${i - 1} images. The folder '${imagesFolder.value}' now contains ${fs.readdirSync(imagesFolder.value).length} images.`);
+      console.log(`Time elapsed: ${Math.floor(performance.now() - start)} milliseconds.`);
     });
 })();
