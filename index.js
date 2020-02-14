@@ -50,7 +50,7 @@ async function getImageDataFromGoogle(urlSlug) {
   const imagesFolder = await prompts({
     type: 'text',
     name: 'value',
-    message: 'Where will images be saved? (/images)',
+    message: 'Where will images be saved? (./images)',
     initial: 'images',
   });
   if (!fs.existsSync(imagesFolder.value)) {
