@@ -1,63 +1,89 @@
 /* eslint-disable no-console */
 const fs = require('fs');
-const https = require('https');
 const { performance } = require('perf_hooks');
 const axios = require('axios');
+const path = require('path');
 const prompts = require('prompts');
 // eslint-disable-next-line prefer-destructuring
 const Spinner = require('cli-spinner').Spinner;
-const im = require('imagemagick');
+const gm = require('gm').subClass({ imageMagick: true });
 
-async function isImageGood(localPath) {
+let saveDir;
+
+async function checkImageSize(localPath) {
   return new Promise((resolve, reject) => {
-    im.identify(localPath, (err, features) => {
-      if (err) {
-        return reject(err);
-      }
-      if (features.width < 1800 && features.height < 1200) {
-        return resolve(false);
-      }
-      return resolve(true);
-    });
+    gm(localPath)
+      .size((err, size) => {
+        if (err) {
+          return reject(err);
+        }
+        if (size.width < 1800 || size.height < 1200) {
+          fs.unlinkSync(localPath);
+        }
+        return resolve(true);
+      });
   });
 }
 
-async function saveImageToDisk(url, localPath) {
-  const file = fs.createWriteStream(localPath);
-  return new Promise((resolve, reject) => {
-    https.get(url, (response) => {
-      response.pipe(file);
-      response.on('end', () => resolve())
-        .on('error', (e) => reject(e));
-    });
-  })
-    .then(() => isImageGood(localPath))
-    .then((isGoodImage) => {
-      if (!isGoodImage) fs.unlinkSync(localPath);
-    });
+function getExtension(fileName) {
+  const basename = fileName.split(/[\\/]/).pop();
+  const pos = basename.lastIndexOf('.');
+
+  if (basename === '' || pos < 1) { return ''; }
+
+  return basename.slice(pos + 1);
 }
 
-async function getImageDataFromGoogle(urlSlug) {
-  return axios
-    .get(`https://earthview.withgoogle.com/_api/${urlSlug}.json`)
-    .then(({ data }) => ({
-      photoUrl: data.photoUrl,
-      nextSlug: data.nextSlug,
-    }));
+async function downloadAndSaveImage(url, fileName) {
+  const extension = getExtension(url);
+  const localFilePath = path.resolve(__dirname, saveDir, `${fileName}.${extension}`);
+  const writer = fs.createWriteStream(localFilePath);
+
+  const response = await axios({
+    url,
+    method: 'GET',
+    responseType: 'stream',
+  });
+
+  response.data.pipe(writer);
+
+  return new Promise((resolve, reject) => {
+    writer.on('finish', resolve);
+    writer.on('error', reject);
+  })
+    .then(() => localFilePath);
+}
+
+async function getImageJSONDataFromGoogle(urlSlug) {
+  const { data: imageData } = await axios.get(`https://earthview.withgoogle.com/_api/${urlSlug}.json`);
+  return {
+    photoUrl: imageData.photoUrl,
+    nextSlug: imageData.nextSlug,
+  };
 }
 
 (async () => {
-  const imagesFolder = await prompts({
+  const promptsResponses = await prompts([{
     type: 'text',
-    name: 'value',
+    name: 'saveDir',
     message: 'Where will images be saved? (./images)',
     initial: 'images',
-  });
-  if (!fs.existsSync(imagesFolder.value)) {
-    fs.mkdirSync(imagesFolder.value);
+  }, {
+    type: 'toggle',
+    name: 'verifyImageQuality',
+    message: 'Do you want to verify image size (min. 1800 * 1200) with imagemagick? (must be installed separately)',
+    initial: false,
+    active: 'yes',
+    inactive: 'no',
+  }]);
+
+  saveDir = promptsResponses.saveDir;
+  const { verifyImageQuality } = promptsResponses;
+
+  if (!fs.existsSync(saveDir)) {
+    fs.mkdirSync(saveDir);
   }
-  const saveImagesPromises = [];
-  const imagesMap = {};
+
   const spinner = new Spinner({
     text: 'Processing...',
     stream: process.stderr,
@@ -67,33 +93,48 @@ async function getImageDataFromGoogle(urlSlug) {
     },
   });
   spinner.start();
-  let data = {};
-  let curr = 'queensland-australia-1908';
+
+  const saveImagesPromises = [];
+  const imagesMap = {};
+  let imageName = 'queensland-australia-1908';
   let i = 0;
   const start = performance.now();
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    let imageData;
     i += 1;
     try {
       /* eslint-disable no-await-in-loop */
-      data = await getImageDataFromGoogle(curr);
+      imageData = await getImageJSONDataFromGoogle(imageName);
     } catch (e) {
       console.log(e);
-      break;
     }
-    if (imagesMap[data.nextSlug]) break;
-    imagesMap[data.nextSlug] = data;
-    saveImagesPromises.push(saveImageToDisk(data.photoUrl, `${imagesFolder.value}/${curr}.jpg`));
-    curr = data.nextSlug;
+
+    if (imagesMap[imageData.nextSlug]) break;
+
+    imagesMap[imageData.nextSlug] = imageData;
+    saveImagesPromises.push(
+      downloadAndSaveImage(imageData.photoUrl, imageName)
+        .then(async (localFilePath) => {
+          if (verifyImageQuality) {
+            await checkImageSize(localFilePath);
+          }
+        })
+        .catch((error) => {
+          console.log(error);
+          return Promise.resolve();
+        }),
+    );
+    imageName = imageData.nextSlug;
     spinner.text = `Got ${i} images so far...`;
   }
+
+  await Promise.all(saveImagesPromises);
+
+  const end = performance.now();
+
   spinner.stop();
   console.clear();
-  console.log('Finishing up saving images...');
-  return Promise.all(saveImagesPromises)
-    .then(() => {
-      console.clear();
-      console.log(`Got ${i - 1} images. The folder '${imagesFolder.value}' now contains ${fs.readdirSync(imagesFolder.value).length} images.`);
-      console.log(`Time elapsed: ${Math.floor(performance.now() - start)} milliseconds.`);
-    });
+  console.log(`Got ${i} total images. The folder '${saveDir}' now contains ${fs.readdirSync(saveDir).length} images.`);
+  console.log(`Time elapsed: ${Math.floor(end - start)} milliseconds.`);
 })();
